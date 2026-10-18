@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: leadfinder_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass CRMUltra_Redis_2026_SecureKey
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    volumes:
+      - redis_data:/data
+    networks:
+      - leadfinder_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "CRMUltra_Redis_2026_SecureKey", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: leadfinder_backend
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.5'
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    networks:
+      - leadfinder_network
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: leadfinder_worker
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.5'
+    env_file:
+      - .env
+    command: python -m app.jobs.worker
+    volumes:
+      - ./data:/app/data
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+    networks:
+      - leadfinder_network
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: leadfinder_frontend
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=/api
+    networks:
+      - leadfinder_network
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:alpine
+    container_name: leadfinder_nginx
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:32800:80"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.leadfinder.rule=Host(`crm.sakibhossain.io`)"
+      - "traefik.http.routers.leadfinder.entrypoints=websecure"
+      - "traefik.http.routers.leadfinder.tls.certresolver=letsencrypt"
+      - "traefik.http.services.leadfinder.loadbalancer.server.port=80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - leadfinder_network
+    depends_on:
+      - frontend
+      - backend
+
+networks:
+  leadfinder_network:
+    driver: bridge
+
+volumes:
+  redis_data:
